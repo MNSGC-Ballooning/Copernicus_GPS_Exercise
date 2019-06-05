@@ -9,7 +9,7 @@
 #define greenLED 4
 #define RX 7
 #define TX 6
-#define chipSelect 10 //not really sure what this does right now
+#define chipSelect 10
 
 
 TinyGPSPlus GPS;
@@ -26,7 +26,9 @@ unsigned long lastGPS = 0;
 unsigned long GPSstartTime = 0;    //when the GPS starts, time in seconds of last GPS update.
 uint8_t days = 0;                  //if we're flying overnight
 unsigned long timer = 0;           //timer to ensure GPS prints data once every second
-
+unsigned long fixtimer = 0;        //timer to ensure that if the GPS has a fix, and LED flashes once every 10 seconds
+unsigned long LEDlocktimer = 0;    //timer to ensure that the green LED that goes on if there is a GPS lock stays on for a specified amount of time
+bool fixLED = false;               //bool that communicates if the green LED is on or not
 
 void updateGPS() {                    //Function that updates GPS every second and accounts for
   static bool firstFix = false;       //clock rollover at midnight (23:59:59 to 00:00:00)
@@ -60,23 +62,87 @@ int getLastGPS() {
   return days * 86400 + lastGPS;
 }
 
-String printGPS() { //function that returns the GPS data
-  //populate the variables in case the GPS does not get a fix
+
+void SerialprintGPS() { //function that returns the GPS data to the serial port.
+                        //can serve as another check to be sure GPS has a lock before powering it with a separate battery
+  String data="";
+  
   String datestring = "01/01/2000";
   String timestamp = "00:00:00";
-  String coordinates = "00.0000, 00.0000,  Altitude(feet): 0.000";
+  String coordinates = "00.0000, 00.0000, 0.00";
   
-  if (GPS.Fix && GPS.altitude.feet() != 0) { //populate the strings with the GPS data
-    datestring = String(GPS.date.month()) + "/" + String(GPS.date.day()) + "/" + String(GPS.date.year());
-    timestamp = String(GPS.time.hour()) + ":" + String(GPS.time.minute()) + ":" + String(GPS.time.second());
-    coordinates = String(GPS.location.lat(), 6) + ", " + String(GPS.location.lng(), 6) + ",  Altitude (feet): " + String(GPS.altitude.feet());
+  data += datestring + ", " + timestamp + ",  " + coordinates + "  "; //string that is printed in case no data is received
+  
+  if (GPS.Fix && GPS.altitude.feet() != 0) {
+   Serial.print(GPS.date.month());  //prints the date
+   Serial.print("/");
+   Serial.print(GPS.date.day());
+   Serial.print("/");
+   Serial.print(GPS.date.year());
+   Serial.print(", ");
+
+   Serial.print(GPS.time.hour());   //prints the time
+   Serial.print(":");
+   Serial.print(GPS.time.minute());
+   Serial.print(":");
+   Serial.print(GPS.time.second());
+   Serial.print(", ");
+    
+   Serial.print(GPS.location.lat(), 6); //prints the latitude
+   Serial.print(", ");
+
+   Serial.print(GPS.location.lng(), 6); //prints the longitude
+   Serial.print(", ");
+    
+   Serial.print(GPS.altitude.feet());   //prints the altitude
+   Serial.print("\n");  
     }
-  
-  String data = datestring + ", " + timestamp + ",  " + coordinates; //date,time,lat,long,alt
-  return data;
+
+  else {
+    Serial.println(data); //if there is no GPS lock (GPS.Fix), then the data string is printed
+    }
 }
 
 
+void SDprintGPS() { //function that returns the GPS data to the SD card
+  String data="";
+  
+  String datestring = "01/01/2000";
+  String timestamp = "00:00:00";
+  String coordinates = "00.0000, 00.0000, 0.00";
+  
+  data += datestring + ", " + timestamp + ",  " + coordinates + "  "; //string that is printed in case no data is received
+
+  if (GPS.Fix && GPS.altitude.feet() != 0) {
+   datalog.print(GPS.date.month());   //prints the date
+   datalog.print("/");
+   datalog.print(GPS.date.day());
+   datalog.print("/");
+   datalog.print(GPS.date.year());
+   datalog.print(", ");
+
+   datalog.print(GPS.time.hour());    //prints the time
+   datalog.print(":");
+   datalog.print(GPS.time.minute());
+   datalog.print(":");
+   datalog.print(GPS.time.second());
+   datalog.print(", ");
+    
+   datalog.print(GPS.location.lat(), 6); //prints the latitude
+   datalog.print(", ");
+
+   datalog.print(GPS.location.lng(), 6); //prints the longitude
+   datalog.print(", ");
+    
+   datalog.print(GPS.altitude.feet());   //print the altitude
+   datalog.print("\n");   
+      }
+
+
+   else {
+    datalog.println(data); //if there is no GPS lock (GPS.Fix), then the data string is printed
+      }
+}
 
 
 
@@ -129,27 +195,35 @@ void setup() {
     datalog.println(header);
     datalog.close();
   }
-
 }
 
 
-
 void loop() {
-  updateGPS(); //time-keeping stuff for the GPS
+   if (millis() - fixtimer > 10000 && GPS.Fix) {
+     fixtimer = millis(); //both fixtimer and LEDlocktimer set every 10 seconds
+     LEDlocktimer = millis();
+     digitalWrite(greenLED, HIGH);
+     fixLED = true; 
+     }
+  
+   updateGPS(); //time-keeping stuff for the GPS
 
-  if (millis() - timer > 1000) {
-    timer = millis();
+   if (millis() - timer > 1000) {
+     timer = millis();  //every second data is logged to the serial monitor and SD card
 
-    digitalWrite(greenLED, HIGH);
-    Serial.println("hi");
-    Serial.println(GPS.altitude.feet());
-    Serial.println(printGPS()); //Prints GPS data to serial monitor
-    if (SDactive) {
-        datalog = SD.open(filename, FILE_WRITE);
-        datalog.println(printGPS());
-        datalog.close();
-        }
-     digitalWrite(greenLED, LOW);
-    }
+     SerialprintGPS(); //data printed to serial
+    
+     if (SDactive) {
+       digitalWrite(redLED, HIGH); //if SD is active, then the red LED flases everytime data is logged
+       datalog = SD.open(filename, FILE_WRITE);
+       SDprintGPS(); //data printed to SD
+       datalog.close();
+       digitalWrite(redLED, LOW);
+       }
+     }
 
+   if (fixLED && (millis() - LEDlocktimer > 1000)) { //when the GPS has a fix, this ensures that the
+    digitalWrite(greenLED, LOW);                     //green LED is on for a full second every 10 seconds
+    fixLED = false;  
+   }
 }
